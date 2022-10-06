@@ -24,14 +24,14 @@ def obj_piramid(file, pos, ori, n=3, id0=0, spacing=[0.05125, 0.05125, 0.125]):
     return marker_list
 
 
-def get_marker(file, pos, ori, id=0, scale=[1, 1, 1], color=[0,255,0]):
+def get_marker(file, pos, ori, id=0, scale=[1, 1, 1], color=[0,255,0], text=''):
     marker = Marker()
 
-    marker.header.frame_id = "/map"
+    marker.header.frame_id = "/camera"
     marker.header.stamp = rospy.Time.now()
 
-    # set shape, Arrow: 0; Cube: 1 ; Sphere: 2 ; Cylinder: 3
-    marker.type = 2#marker.MESH_RESOURCE
+    # set shape, Arrow: 0; Cube: 1 ; Sphere: 2 ; Cylinder: 3; text: 9
+    marker.type = 9#marker.MESH_RESOURCE
     marker.id = id
 
     # Set the scale of the marker
@@ -44,6 +44,9 @@ def get_marker(file, pos, ori, id=0, scale=[1, 1, 1], color=[0,255,0]):
     marker.color.g = color[1]/255.0
     marker.color.b = color[0]/255.0
     marker.color.a = 1.0
+
+    marker.text = text
+
 
     marker.pose.position.x = pos[0]
     marker.pose.position.y = pos[1]

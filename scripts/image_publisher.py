@@ -24,10 +24,14 @@ if ros:
     import rospy
     import roslib
     from sensor_msgs.msg import Image
+    from darknet_ros_msgs.msg import BoundingBoxes, BoundingBox
+    from geometry_msgs.msg import PoseStamped
+    from std_msgs.msg import Header
     import json
     import rospkg
     import os
     from visualization_utils import *
+
     
     pkg_path=rospkg.RosPack().get_path('realsense_3d_detector')
     conf_file_path = os.path.join(pkg_path, 'config', 'obj_stl.json')
@@ -39,9 +43,11 @@ if ros:
         obj_stl = json.load(f)
 
     rospy.init_node('image_publisher', anonymous=True)
-    image_pub = rospy.Publisher("/camera/image_raw/",Image,queue_size=1)
+    image_pub = rospy.Publisher("/camera/image_raw/",Image,queue_size=10)
+    image_detec_pub = rospy.Publisher("/detectrions/image_raw/",Image,queue_size=10)
 
     marker_pub = rospy.Publisher("/objs_markers", MarkerArray,queue_size=1)
+    bbox_pub = rospy.Publisher("/objs_bbox", BoundingBoxes,queue_size=1)
 
     def cv2_to_imgmsg(cv_image):
         img_msg = Image()
@@ -52,6 +58,28 @@ if ros:
         img_msg.data = cv_image.tostring()
         img_msg.step = len(img_msg.data) // img_msg.height # That double line is actually integer division, not a comment
         return img_msg
+
+    def boxes_to_msg(boxes, indices, obj_names):
+        msg=BoundingBoxes()
+        t = rospy.Time.now()
+        # msg.header.stamp = t
+        # msg.header.frame_id = "detections"
+
+        if len(indices) > 0:
+            for j,i in enumerate(indices.flatten()):
+                # d.header.frame_id = obj_names[j]
+                # d.header.stamp = t
+
+                (x, y) = (boxes[i][0], boxes[i][1])
+                (w, h) = (boxes[i][2], boxes[i][3])
+
+                b = BoundingBox()
+                b.xmin, b.ymin = x, y
+                b.xmax, b.ymax = x+w, y+h
+                b.id=j
+                b.Class = obj_names[j]
+                msg.bounding_boxes.append(b)
+        return msg
 
     def pub_markers(obj_names, obj_poses, colors=None):
 
@@ -70,7 +98,7 @@ if ros:
             color=[0,255,0] if colors is None else colors[i]
             
             markerArray.markers.append(get_marker(
-                "package://realsense_3d_detector/meshes/"+stl, obj_poses[i], obj_ori, id=i, scale=[100, 100, 100], color=color))
+                "package://realsense_3d_detector/meshes/"+stl, obj_poses[i], obj_ori, id=i, scale=[100, 100, 100], color=color, text=obj_names[i]))
 
             # markerArray.markers.append(get_marker(
             #     os.path.join(pkg_path,"meshes/",stl), obj_poses[i], obj_ori, id=i))
@@ -101,7 +129,7 @@ depth_scale = depth_sensor.get_depth_scale()
 
 # We will be removing the background of objects more than
 #  clipping_distance_in_meters meters away
-clipping_distance_in_meters = 1 #1 meter
+clipping_distance_in_meters = 2.0 #1 meter
 clipping_distance = clipping_distance_in_meters / depth_scale
 
 
@@ -119,20 +147,22 @@ ln = [ln[i - 1] for i in net.getUnconnectedOutLayers()]
 r0=np.zeros((416, 416))
 outputs = None
 depth_filter=1.0
+confidence_tr = 0.5
 
 def trackbar2(x):
-    confidence = x/100
+    global confidence_tr
+    confidence_tr = x/100
     r = r0.copy()
     if outputs is None:
         return
     for output in np.vstack(outputs):
-        if output[4] > confidence:
+        if output[4] > confidence_tr:
             x, y, w, h = output[:4]
             p0 = int((x-w/2)*416), int((y-h/2)*416)
             p1 = int((x+w/2)*416), int((y+h/2)*416)
             cv2.rectangle(r, p0, p1, 1, 1)
     cv2.imshow('blob', r)
-    text = "Bbox confidence={}".format(confidence)
+    text = "Bbox confidence_tr={}".format(confidence_tr)
     cv2.displayOverlay('blob', text)
 
 def trackbar3(x):
@@ -144,10 +174,11 @@ def trackbar3(x):
 if show:
     cv2.namedWindow("blob", cv2.WINDOW_AUTOSIZE)
     cv2.createTrackbar('confidence', 'blob', 50, 101, trackbar2)
-    cv2.createTrackbar('clipping dist', 'blob', 100, 500, trackbar3)
+    cv2.createTrackbar('clipping dist', 'blob', 200, 500, trackbar3)
 
-    trackbar2(50)
-    trackbar3(50)
+
+trackbar2(56)
+trackbar3(169)
 
 
 try:
@@ -221,7 +252,7 @@ try:
             scores = detection[5:]
             classID = np.argmax(scores)
             confidence = scores[classID]
-            if confidence > 0.5:
+            if confidence > confidence_tr:
                 box = detection[:4] * np.array([w, h, w, h])
                 (centerX, centerY, width, height) = box.astype("int")
                 x = int(centerX - (width / 2))
@@ -231,7 +262,7 @@ try:
                 confidences.append(float(confidence))
                 classIDs.append(classID)
 
-    indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
+    indices = cv2.dnn.NMSBoxes(boxes, confidences, confidence_tr, 0.4)
 
     obj_names=[]
     obj_poses=[]
@@ -259,8 +290,8 @@ try:
             # cropp_removed = np.where((depth_image_3d > clipping_distance) | (depth_image_3d <= 0), grey_color, color_image)
 
             img_h,img_w,_=bg_removed.shape
-            for x_i in range(max(x,0),min(x+w,img_w),int(w/steps)):
-                for y_i in range(max(y,0),min(y+h,img_h),int(h/steps)):
+            for x_i in range(max(x,0),min(x+w,img_w),int(max(w/steps, 1))):
+                for y_i in range(max(y,0),min(y+h,img_h),int(max(h/steps,1))):
                     if not np.any(bg_removed[y_i,x_i]==grey_color):
                         cv2.circle(img, (x_i,y_i), 2, (0,0,255), 1)
                         # print(aligned_depth_frame.shape)
@@ -282,7 +313,10 @@ try:
         cv2.imshow('window', img)
 
     if ros:
-        image_pub.publish(cv2_to_imgmsg(img))
+        image_pub.publish(cv2_to_imgmsg(color_image))
+        image_detec_pub.publish(cv2_to_imgmsg(img))
+
+        bbox_pub.publish(boxes_to_msg(boxes,indices, obj_names))
         pub_markers(obj_names, obj_poses, colors=colors)
 
     if cv2.waitKey(25) & 0xFF == ord('q'):
